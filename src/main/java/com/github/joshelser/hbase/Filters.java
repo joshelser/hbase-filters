@@ -59,24 +59,35 @@ public class Filters implements Runnable {
     conf.addResource(new Path("/usr/local/lib/hbase/conf/hbase-site.xml"));
     Connection conn = ConnectionFactory.createConnection(conf);
 
-    TableName tn = getOrCreateTable(conn);
+    TableName tn = dropAndCreateTable(conn);
 
     // Should see rows1 and 3
-    writeData(conn, tn ,"row1", true, true);
-    writeData(conn, tn ,"row2", false, false);
-    writeData(conn, tn ,"row3", true, true);
-    writeData(conn, tn ,"row4", true, false);
+    writeData(conn, tn ,"row1", "YES", "YES");
+    writeData(conn, tn ,"row2", "NO", "NO");
+    writeData(conn, tn ,"row3", "YES", "YES");
+    writeData(conn, tn ,"row4", "YES", "NO");
+    writeData(conn, tn ,"row5", null, "YES");
+    writeData(conn, tn ,"row6", "YES", null);
+
+    try (Table t = conn.getTable(tn)) {
+      ResultScanner rs = t.getScanner(new Scan());
+      System.out.println("*** Reading results");
+      for (Result result : rs) {
+        System.out.println(result.toString());
+      }
+      System.out.println("*** Done reading results");
+    }
 
     Set<String> rowsSeen = new HashSet<>();
     Scan scan = createScan();
     try (Table t = conn.getTable(tn)) {
       ResultScanner rs = t.getScanner(scan);
-      System.out.println("*** Reading results");
+      System.out.println("*** Reading filtered results");
       for (Result result : rs) {
         rowsSeen.add(new String(result.getRow(), StandardCharsets.UTF_8));
         System.out.println(result.toString());
       }
-      System.out.println("*** Done reading results");
+      System.out.println("*** Done reading filtered results");
     }
     if (rowsSeen.size() != 2 || !rowsSeen.contains("row1") | !rowsSeen.contains("row3")) {
       throw new RuntimeException("Unexpected results. Saw rows: " + rowsSeen + ", should have seen {row1, row3}");
@@ -84,15 +95,13 @@ public class Filters implements Runnable {
     System.out.println("Success");
   }
 
-  TableName getOrCreateTable(Connection conn) throws Exception {
+  TableName dropAndCreateTable(Connection conn) throws Exception {
     Admin admin = conn.getAdmin();
-    TableName[] tableNames = admin.listTableNames();
-    for (TableName tableName : tableNames) {
-      if (tableName.getNameAsString().equals(TABLE_NAME)) {
-        return tableName;
-      }
-    }
     TableName tn = TableName.valueOf(TABLE_NAME);
+    if (admin.tableExists(tn)) {
+      admin.disableTable(tn);
+      admin.deleteTable(tn);
+    }
     HTableDescriptor htd = new HTableDescriptor(tn);
     htd.addFamily(new HColumnDescriptor(FAM1));
     htd.addFamily(new HColumnDescriptor(FAM2));
@@ -100,11 +109,15 @@ public class Filters implements Runnable {
     return tn;
   }
 
-  void writeData(Connection conn, TableName tn, String row, boolean yes1, boolean yes2) throws Exception {
+  void writeData(Connection conn, TableName tn, String row, String val1, String val2) throws Exception {
     Put p = new Put(Bytes.toBytes(row));
     p.addColumn(FAM1, Bytes.toBytes("col1"), Bytes.toBytes("whatever"));
-    p.addColumn(FAM2, Bytes.toBytes("col1"), (yes1 ? Bytes.toBytes("YES") : Bytes.toBytes("NO")));
-    p.addColumn(FAM2, Bytes.toBytes("col2"), (yes2 ? Bytes.toBytes("YES") : Bytes.toBytes("NO")));
+    if (null != val1) {
+      p.addColumn(FAM2, Bytes.toBytes("col1"), Bytes.toBytes(val1));
+    }
+    if (null != val2) {
+      p.addColumn(FAM2, Bytes.toBytes("col2"), Bytes.toBytes(val2));
+    }
     Table t = conn.getTable(tn);
     t.put(p);
     t.close();
@@ -114,7 +127,9 @@ public class Filters implements Runnable {
     Scan scan = new Scan();
     FilterList list = new FilterList(FilterList.Operator.MUST_PASS_ALL);
     SingleColumnValueFilter cvFilter1 = new SingleColumnValueFilter(FAM2, Bytes.toBytes("col1"), CompareOp.EQUAL, Bytes.toBytes("YES"));
+    cvFilter1.setFilterIfMissing(true);
     SingleColumnValueFilter cvFilter2 = new SingleColumnValueFilter(FAM2, Bytes.toBytes("col2"), CompareOp.EQUAL, Bytes.toBytes("YES"));
+    cvFilter2.setFilterIfMissing(true);
     list.addFilter(cvFilter1);
     list.addFilter(cvFilter2);
     scan.addColumn(FAM2, Bytes.toBytes("col1"));
